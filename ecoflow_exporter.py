@@ -229,6 +229,7 @@ class Worker:
         self.metrics_collector = []
         self.online = Gauge("ecoflow_online", "1 if device is online", labelnames=["device"])
         self.mqtt_messages_receive_total = Counter("ecoflow_mqtt_messages_receive_total", "total MQTT messages", labelnames=["device"])
+        self.offline_tracker = 0
 
     def loop(self):
         time.sleep(self.collecting_interval_seconds)
@@ -238,16 +239,19 @@ class Worker:
                 log.info(f"Processing {queue_size} event(s) from the message queue")
                 self.online.labels(device=self.device_name).set(1)
                 self.mqtt_messages_receive_total.labels(device=self.device_name).inc(queue_size)
+                self.offline_tracker = 0
             else:
-                log.info("Message queue is empty. Assuming that the device is offline")
-                self.online.labels(device=self.device_name).set(0)
-                # Clear metrics for NaN (No data) instead of last value
-                for metric in self.metrics_collector:
-                    metric.clear()
+                self.offline_tracker += 1
+                # Clear metrics for NaN (No data) instead of last value if the queue is empty for more than 60 seconds
+                if self.offline_tracker * self.collecting_interval_seconds > 60:
+                    log.info("Message queue is empty. Assuming that the device is offline")
+                    self.online.labels(device=self.device_name).set(0)
+                    for metric in self.metrics_collector:
+                        metric.clear()
 
             while not self.message_queue.empty():
                 payload = self.message_queue.get()
-                log.debug(f"Recived payload: {payload}")
+                log.debug(f"Received payload: {payload}")
                 if payload is None:
                     continue
 
