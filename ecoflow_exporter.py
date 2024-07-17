@@ -222,14 +222,15 @@ class EcoflowMetric:
 
 
 class Worker:
-    def __init__(self, message_queue, device_name, collecting_interval_seconds=10):
+    def __init__(self, message_queue, device_name, collecting_interval_seconds, timeout_seconds):
         self.message_queue = message_queue
         self.device_name = device_name
         self.collecting_interval_seconds = collecting_interval_seconds
         self.metrics_collector = []
         self.online = Gauge("ecoflow_online", "1 if device is online", labelnames=["device"])
         self.mqtt_messages_receive_total = Counter("ecoflow_mqtt_messages_receive_total", "total MQTT messages", labelnames=["device"])
-        self.offline_tracker = 0
+        self.last_online = None
+        self.timeout_seconds = timeout_seconds
 
     def loop(self):
         time.sleep(self.collecting_interval_seconds)
@@ -237,14 +238,13 @@ class Worker:
             queue_size = self.message_queue.qsize()
             if queue_size > 0:
                 log.info(f"Processing {queue_size} event(s) from the message queue")
+                self.last_online = time.time()
                 self.online.labels(device=self.device_name).set(1)
                 self.mqtt_messages_receive_total.labels(device=self.device_name).inc(queue_size)
-                self.offline_tracker = 0
             else:
-                self.offline_tracker += 1
-                # Clear metrics for NaN (No data) instead of last value if the queue is empty for more than 60 seconds
-                if self.offline_tracker * self.collecting_interval_seconds > 60:
-                    log.info("Message queue is empty. Assuming that the device is offline")
+                # Clear metrics for NaN (No data) instead of last value if the queue is empty for more than timeout seconds
+                if self.last_online and time.time() - self.last_online > self.timeout_seconds:
+                    log.info(f"Message queue is empty for {self.timeout_seconds}. Assuming that the device is offline")
                     self.online.labels(device=self.device_name).set(0)
                     for metric in self.metrics_collector:
                         metric.clear()
@@ -353,7 +353,7 @@ def main():
 
     EcoflowMQTT(message_queue, device_sn, auth.mqtt_username, auth.mqtt_password, auth.mqtt_url, auth.mqtt_port, auth.mqtt_client_id, timeout_seconds)
 
-    metrics = Worker(message_queue, device_name, collecting_interval_seconds)
+    metrics = Worker(message_queue, device_name, collecting_interval_seconds, timeout_seconds)
 
     start_http_server(exporter_port)
 
